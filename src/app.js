@@ -31,6 +31,10 @@ app.get("/", async (_req, res) => {
   res.send(`ECS task ID: ${taskId}`);
 });
 
+app.get("/hi", async (_req, res) => {
+  res.send("hi world :)");
+});
+
 app.get("/health", (_req, res) => {
   res.status(200).send("OK");
 });
