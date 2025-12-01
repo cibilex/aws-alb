@@ -114,4 +114,4 @@ jobs:
         env:
           ECR_REPOSITORY: "${{ secrets.ECR_REPOSITORY }}"
         run: |
-          docker push $ECR_REPOSITORY --all-tags3
+          docker push $ECR_REPOSITORY --all-tags
