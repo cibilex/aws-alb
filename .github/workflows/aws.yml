@@ -1,0 +1,117 @@
+####################################################################################
+# IMPORTANT NOTES
+####################################################################################
+# - $ECR_REPOSITORY:
+#     This must be the full AWS ECR URI:
+#     Example: 123123123.dkr.ecr.eu-centra-1.amazonaws.com/cibilex
+#     (AWS Console → ECR → Repositories → Your Repository → "URI")
+#     → The repository MUST already exist in AWS ECR before pushing.
+#
+# - AWS Region:
+#     The region used in GitHub Actions must match the region of your ECR repository.
+#
+# - Docker multi-tagging:
+#     `docker build -t tag1 -t tag2 .`
+#     allows us to create **two tags with a single build** (e.g., commit-hash tag + latest tag).
+#
+# - OIDC:
+#     `aws-actions/configure-aws-credentials` uses GitHub's OIDC token.
+#     No AWS secrets are stored in GitHub — credentials are temporary & secure.
+#
+####################################################################################
+
+name: Test aws-ecr-credentials
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+permissions:
+  id-token: write # Required for GitHub → AWS OIDC authentication
+  contents: read # Required for checkout
+
+jobs:
+  test-aws:
+    environment: ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      # ----------------------------------------
+      # Checkout repository
+      # ----------------------------------------
+      - name: checkout code
+        uses: actions/checkout@v4
+
+
+      # ----------------------------------------
+      # 1. OIDC Authentication → temporary AWS credentials
+      # ----------------------------------------
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: ${{ vars.AWS_SESSION_NAME }}
+
+      # ----------------------------------------
+      # 2. Log in to ECR (Docker cannot use AWS CLI creds automatically)
+      # ----------------------------------------
+      - name: login to ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ----------------------------------------
+      # 3. Prepare dynamic environment variables
+      # ----------------------------------------
+      - name: prepare environments
+        env:
+          ECR_REPOSITORY: "${{ secrets.ECR_REPOSITORY }}"
+        run: |
+          REPO_NAME=${GITHUB_REPOSITORY#*/}   # Extract repo name
+          COMMIT_HASH=$(git rev-parse --short $GITHUB_SHA) # extract commit short id
+
+          DOCKER_LATEST_VERSION_ID=${ECR_REPOSITORY}:${COMMIT_HASH}
+          DOCKER_LATEST_VERSION_TAG=${ECR_REPOSITORY}:latest
+
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+          echo "DOCKER_LATEST_VERSION_ID=$DOCKER_LATEST_VERSION_ID" >> $GITHUB_ENV
+          echo "DOCKER_LATEST_VERSION_TAG=$DOCKER_LATEST_VERSION_TAG" >> $GITHUB_ENV
+
+      # ----------------------------------------
+      # 4. Log prepared variables
+      # ----------------------------------------
+      - name: log prepared environments
+        run: |
+          echo "REPO_NAME = $REPO_NAME"
+          echo "COMMIT_HASH = $COMMIT_HASH"
+          echo "DOCKER_LATEST_VERSION_ID = $DOCKER_LATEST_VERSION_ID"
+          echo "DOCKER_LATEST_VERSION_TAG = $DOCKER_LATEST_VERSION_TAG"
+
+      # ----------------------------------------
+      # 5. Build Docker image with two tags
+      # ----------------------------------------
+      - name: build docker image
+        run: |
+          docker build \
+            -t $DOCKER_LATEST_VERSION_ID \
+            -t $DOCKER_LATEST_VERSION_TAG .
+
+      # ----------------------------------------
+      # 6. Side check: List images
+      # ----------------------------------------
+      - name: list docker image
+        env:
+          ECR_REPOSITORY: "${{ secrets.ECR_REPOSITORY }}"
+        run: |
+          docker images | grep $ECR_REPOSITORY
+
+      # ----------------------------------------
+      # 7. Push all tags to ECR
+      # ----------------------------------------
+      - name: push docker image to ecr
+        env:
+          ECR_REPOSITORY: "${{ secrets.ECR_REPOSITORY }}"
+        run: |
+          docker push $ECR_REPOSITORY --all-tags3
