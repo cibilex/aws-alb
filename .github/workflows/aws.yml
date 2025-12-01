@@ -115,3 +115,64 @@ jobs:
           ECR_REPOSITORY: "${{ secrets.ECR_REPOSITORY }}"
         run: |
           docker push $ECR_REPOSITORY --all-tags
+        
+      # ----------------------------------------
+      # 8. Fetch current task definition
+      # ----------------------------------------
+      - name: fetch task definition
+        id: fetch-task-def
+        env:
+          ECS_CLUSTER: "${{ secrets.ECS_CLUSTER }}"
+          ECS_SERVICE: "${{ secrets.ECS_SERVICE }}"
+        run: |
+          if [ -z "$ECS_CLUSTER" ] || [ -z "$ECS_SERVICE" ]; then
+            echo "Warning: ECS_CLUSTER or ECS_SERVICE not set. Skipping ECS deployment."
+            exit 1
+          fi
+          
+          echo "Fetching task definition for service: $ECS_SERVICE"
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region ${{ vars.AWS_REGION }} \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          if [ "$TASK_DEF_ARN" == "None" ] || [ -z "$TASK_DEF_ARN" ]; then
+            echo "Error: Could not fetch task definition ARN"
+            exit 1
+          fi
+          
+          echo "Task Definition ARN: $TASK_DEF_ARN"
+          echo "should_deploy=true" >> $GITHUB_OUTPUT
+          
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEF_ARN \
+            --region ${{ vars.AWS_REGION }} \
+            --query 'taskDefinition' > task-definition.json
+          
+          echo "Task definition saved to task-definition.json"
+
+      # ----------------------------------------
+      # 9. Update task definition with new image
+      # ----------------------------------------
+      - name: render task definition
+        id: task-def
+        if: steps.fetch-task-def.outputs.should_deploy == 'true'
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ secrets.CONTAINER_NAME }}
+          image: ${{ env.DOCKER_LATEST_VERSION_ID }}
+
+      # ----------------------------------------
+      # 10. Deploy updated task definition to ECS
+      # ----------------------------------------
+      - name: deploy task definition
+        if: steps.fetch-task-def.outputs.should_deploy == 'true'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE }}
+          cluster: ${{ secrets.ECS_CLUSTER }}
+          wait-for-service-stability: true
